@@ -175,24 +175,39 @@ Run elevated (Administrator). Scripts below are safe diagnostics unless noted.
 # rpc-health.ps1
 $services = "RpcSs","RpcEptMapper"
 Get-Service -Name $services | Select-Object Name,Status,StartType | Format-Table -AutoSize
-
+# Check dependencies
+Get-CimInstance Win32_Service | Where-Object { $_.Name -in $services } |
+    Select-Object Name, StartMode, State, ExitCode, ServiceSpecificExitCode, @{n="Dependencies";e={$_.Dependencies}} |
+    Format-List
 # Check endpoint mapper connectivity (port 135)
-Test-NetConnection -ComputerName 127.0.0.1 -Port 135 -InformationLevel Detailed
-
-# Check for RPC-related registry entries (informational)
-Get-ChildItem "HKLM:\SYSTEM\CurrentControlSet\Services\RpcEptMapper","HKLM:\SYSTEM\CurrentControlSet\Services\RpcSs" -ErrorAction SilentlyContinue
+Test-NetConnection -ComputerName localhost -Port 135 -InformationLevel Detailed
+# Fallback: check RPC endpoint mapper registration
+Get-WmiObject -Namespace root\cimv2 -Class Win32_Service |
+    Where-Object { $_.Name -eq "RpcEptMapper" } |
+    Select-Object Name, State, StartMode, ExitCode, ServiceSpecificExitCode
 ```
 
 8.2 Firewall service health
 ```powershell
 # firewall-health.ps1
+# Basic service state
 Get-Service -Name MpsSvc | Format-List *
+# Check dependencies (critical for RPC)
+Get-CimInstance Win32_Service -Filter "Name='MpsSvc'" |
+    Select-Object Name, State, StartMode, ExitCode, ServiceSpecificExitCode, @{n="Dependencies";e={$_.Dependencies}} |
+    Format-List
+# Check Base Filtering Engine (required)
+Get-Service -Name BFE | Format-List *
+# Check firewall profiles
 Get-NetFirewallProfile | Format-Table Name,Enabled,DefaultInboundAction,DefaultOutboundAction
 ```
 
-8.3 Windows Update logs & servicing logs
+8.3 ※ OPTIONAL, means me as human didn't do this but copilot know best I guess?笑  Windows Update logs & servicing logs
 ```powershell
 # update-logs.ps1
+# Generate synthetic WindowsUpdate.log (Win11+)
+Write-Output "`nGenerating WindowsUpdate.log..."
+Get-WindowsUpdateLog -Force
 $paths = @(
   "$env:windir\Panther\setupact.log",
   "$env:windir\Panther\setuperr.log",
@@ -200,32 +215,39 @@ $paths = @(
   "$env:windir\WindowsUpdate.log"
 )
 foreach ($p in $paths) {
-  if (Test-Path $p) { Write-Output "`n=== $p ===`n"; Get-Content -Path $p -Tail 200 -ErrorAction SilentlyContinue }
-  else { Write-Output "Missing: $p" }
+  if (Test-Path $p) {
+    Write-Output "`n=== $p (tail 200) ===`n"
+    Get-Content -Path $p -Tail 200 -ErrorAction SilentlyContinue
+  } else {
+    Write-Output "Missing: $p"
+  }
 }
+# CBS store state
+Write-Output "`n=== CBS Store State ==="
+DISM /Online /Cleanup-Image /CheckHealth
+# Pending operations
+Write-Output "`n=== Pending Operations ==="
+DISM /Online /Cleanup-Image /ScanHealth
+# Servicing stack version
+Write-Output "`n=== Servicing Stack Packages ==="
+Get-WindowsPackage -Online | Where-Object { $_.PackageName -like "*ServicingStack*" }
+# WinRE status
+Write-Output "`n=== WinRE Status ==="
+reagentc /info
 ```
 
-8.4 Servicing stack health (DISM/CBS)
+8.4 ※ Again OPTIONAL, means me as human didn't do this but copilot know best I guess?笑   Servicing stack health (DISM/CBS)
 ```powershell
 # servicing-health.ps1
-Write-Output "Checking component store health..."
-DISM /Online /Cleanup-Image /CheckHealth
+Write-Output "`n=== Component Store Health (DISM) ==="
 DISM /Online /Cleanup-Image /ScanHealth
 DISM /Online /Cleanup-Image /RestoreHealth
-Write-Output "Running SFC..."
+Write-Output "`n=== SFC Scan ==="
 sfc /scannow
-```
-
-8.5 EFI layout
-```powershell
-# efi-layout.ps1
-Get-Disk | Where-Object PartitionStyle -EQ 'GPT' | ForEach-Object {
-    $disk = $_
-    Write-Output "`nDisk $($disk.Number): $($disk.FriendlyName)`n"
-    Get-Partition -DiskNumber $disk.Number | Format-Table -AutoSize
-    Get-Volume -DiskNumber $disk.Number | Where-Object FileSystem -EQ 'FAT32' | Format-Table DriveLetter,FileSystemLabel,Size,SizeRemaining
-}
-bcdedit /enum firmware
+Write-Output "`n=== Pending Reboot State ==="
+Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending" -ErrorAction SilentlyContinue
+Write-Output "`n=== Servicing Stack Packages ==="
+Get-WindowsPackage -Online | Where-Object { $_.PackageName -like "*ServicingStack*" }
 ```
 
 8.6 WinRE status
@@ -256,7 +278,7 @@ reagentc /info
 - NVRAM boot entries (Windows Boot Manager may be set as default)
 - BCD store and WinRE entries
 
-9.2 What Windows generally does not alter
+9.2 ごめん  What Windows generally does not alter
 - It does not intentionally alter GRUB binaries if they are kept on a separate ESP on another disk or protected location; however, Windows often rewrites the ESP and NVRAM entries causing GRUB to be non-default.
 
 9.3 EFI backup procedure (recommended before upgrade)
@@ -314,7 +336,7 @@ Flow:
 10. Local Account Survival Guide (E)
 ------------------------------------
 Registry keys to enforce local-only accounts (apply with care):
-
+※ Yeah copilot is right with ^^ because the following is not for those who need online Microsoft Accounts, and like always I had done this different, but it is probably fine (_)  
 ```reg
 [HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System]
 "DisableMicrosoftAccount"=dword:00000003
@@ -365,10 +387,6 @@ pnputil /export-driver * C:\DriverBackup
 - Ensure services: bits, wuauserv, cryptSvc, trustedinstaller are running.
 - Example reset:
 ```powershell
-Stop-Service wuauserv -Force
-Stop-Service bits -Force
-Rename-Item -Path $env:windir\SoftwareDistribution -NewName SoftwareDistribution.old -ErrorAction SilentlyContinue
-Rename-Item -Path $env:windir\System32\catroot2 -NewName catroot2.old -ErrorAction SilentlyContinue
 Start-Service wuauserv; Start-Service bits
 ```
 
