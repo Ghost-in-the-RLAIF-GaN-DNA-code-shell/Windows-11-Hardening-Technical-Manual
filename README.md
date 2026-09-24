@@ -20,7 +20,7 @@ Safety notes
     The scripts use PowerShell and DISM/SFC; follow the manual guidance for protected services and avoid sc config for RpcEptMapper/RpcSs/MpsSvc.
 
 
-# Also Preventing Windows 11 from Redirecting to MSN During Captive Portal Login
+#Also👻 Preventing Windows 11 from Redirecting to MSN During Captive Portal Login 👻
 
 Audience: Windows system administrators, power users, and network engineers.
 
